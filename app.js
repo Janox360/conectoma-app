@@ -1,5 +1,5 @@
 // app.js · la app web del Conectoma: memoria, reproductor, pantalla bloqueada y menú. La lógica está en conectoma.js.
-const VERSION = "1.0.0";
+const VERSION = "1.0.1";
 const CLAVE_DB = "conectoma-db", CLAVE_YT = "conectoma-clave-youtube";
 const ERRORES_SIN_EMBED = [100, 101, 150, 152, 153];
 const $ = (id) => document.getElementById(id);
@@ -39,9 +39,45 @@ async function aviso(titulo, texto) {
 const claveYoutube = () => localStorage.getItem(CLAVE_YT) || "";
 const desHtml = (s) => { const t = document.createElement("textarea"); t.innerHTML = s; return t.value; };
 const iso = (d) => { const m = /PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/.exec(d || ""); return m ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0) : null; };
+// sin clave: los buscadores libres de YouTube (Piped e Invidious) sí dejan que una página les pregunte.
+// Son servidores de voluntarios: se prueba uno tras otro y se recuerda el que respondió.
+const LIBRES = [
+  ["piped", "https://pipedapi.kavin.rocks"], ["piped", "https://pipedapi.adminforge.de"], ["piped", "https://api.piped.private.coffee"],
+  ["inv", "https://inv.nadeko.net"], ["inv", "https://invidious.nerdvpn.de"], ["inv", "https://yewtu.be"], ["inv", "https://invidious.privacyredirect.com"],
+];
+// «Gasolina» del canal «Daddy Yankee - Topic» o «DaddyYankeeVEVO» → «Daddy Yankee - Gasolina», para que el filtro reconozca al artista
+function conArtista(titulo, canal) {
+  titulo = String(titulo || "");
+  if (/\s[-–—|]\s/.test(titulo) || !canal) return titulo;
+  const c = normalizar(String(canal).replace(/\s*-\s*topic$/i, "").replace(/vevo$/i, "").replace(/([a-z])([A-Z])/g, "$1 $2"));
+  const a = TODOS_ARTISTAS.find((n) => normalizar(n) === c || normalizar(n).replace(/ /g, "") === c.replace(/ /g, ""));
+  return a ? a + " - " + titulo : titulo;
+}
+async function conTiempo(u, ms) {
+  const c = new AbortController(); const t = setTimeout(() => c.abort(), ms);
+  try { const r = await fetch(u, { signal: c.signal }); if (!r.ok) throw new Error(r.status); return await r.json(); } finally { clearTimeout(t); }
+}
+async function buscarLibre(q) {
+  const bueno = localStorage.getItem("conectoma-buscador");
+  const orden = [...LIBRES].sort((a, b) => (b[1] === bueno) - (a[1] === bueno));
+  for (const [tipo, base] of orden) {
+    try {
+      let out;
+      if (tipo === "piped") {
+        const j = await conTiempo(base + "/search?filter=videos&q=" + encodeURIComponent(q), 8000);
+        out = (j.items || []).filter((x) => /watch\?v=/.test(x.url || "")).map((x) => ({ id: x.url.split("v=")[1].slice(0, 11), titulo: conArtista(x.title, x.uploaderName), dur: x.duration > 0 ? x.duration : null }));
+      } else {
+        const j = await conTiempo(base + "/api/v1/search?type=video&q=" + encodeURIComponent(q), 8000);
+        out = (Array.isArray(j) ? j : []).filter((x) => x.videoId).map((x) => ({ id: x.videoId, titulo: conArtista(x.title, x.author), dur: x.lengthSeconds > 0 ? x.lengthSeconds : null }));
+      }
+      if (out.length) { localStorage.setItem("conectoma-buscador", base); return out; }
+    } catch (e) {}
+  }
+  throw new Error("ningún buscador respondió");
+}
 async function buscarYoutube(q) {
   const k = claveYoutube();
-  if (!k) return null;
+  if (!k) return buscarLibre(q);
   const u = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&maxResults=15&q=" + encodeURIComponent(q) + "&key=" + encodeURIComponent(k);
   const r = await fetch(u);
   if (!r.ok) throw new Error("YouTube " + r.status);
@@ -52,12 +88,21 @@ async function buscarYoutube(q) {
     const d = await fetch("https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=" + ids.join(",") + "&key=" + encodeURIComponent(k));
     if (d.ok) for (const x of (await d.json()).items || []) dur[x.id] = iso(x.contentDetails && x.contentDetails.duration);
   }
-  return items.map((x) => ({ id: x.id.videoId, titulo: desHtml(x.snippet.title), dur: dur[x.id.videoId] ?? null }));
+  return items.map((x) => ({ id: x.id.videoId, titulo: conArtista(desHtml(x.snippet.title), x.snippet.channelTitle), dur: dur[x.id.videoId] ?? null }));
 }
+let buscando = false;
 async function buscarNuevas(avisar) {
-  if (!claveYoutube()) { if (avisar) abrirMenu("clave"); return 0; }
+  if (buscando) return 0;
+  buscando = true;
   $("estado").textContent = "🌱 Buscando canciones nuevas…";
-  try { return await semillas(listaActual(), avisar); } finally { pintarEstado(); }
+  if (!actual) { $("titulo").textContent = "🌱 Buscando canciones para " + listaActual().name + "…"; $("info").textContent = "La primera vez demora unos segundos."; }
+  try {
+    const lista = listaActual();
+    let n = await semillas(lista, avisar);
+    if (lista.todas && candidatos(lista).length < 10) // «Para mí» empieza con un poco de cada lista
+      for (const l of LISTAS.slice(1).sort(() => Math.random() - 0.5).slice(0, 3)) n += await semillas(l, false);
+    return n;
+  } finally { buscando = false; pintarEstado(); }
 }
 
 // ---------- el reproductor ----------
@@ -67,13 +112,13 @@ const evitar = () => new Set([...historia.slice(-30), proxima && proxima.id].fil
 function tomar() {
   const lista = listaActual();
   const r = elegir(lista, evitar(), true);
-  if (r.vueltaNueva && tocaSemillas(lista) && claveYoutube()) semillas(lista, false).catch(() => {});
+  if (r.vueltaNueva && tocaSemillas(lista)) semillas(lista, false).catch(() => {});
   return r.cancion;
 }
 function sonar(c) {
   if (!c) {
     $("titulo").textContent = "No hay canciones en " + listaActual().name;
-    $("info").textContent = claveYoutube() ? "Toca ☰ › 🌱 Buscar canciones nuevas." : "Toca ☰ e importa lo de Scriptable o pon tu clave de YouTube.";
+    $("info").textContent = "Toca ☰ › 🌱 Buscar canciones nuevas, o importa lo de Scriptable.";
     return;
   }
   const lista = listaActual();
@@ -97,7 +142,7 @@ function atras() {
 }
 // Safari 17+: pedirle a iOS una sesión de audio de «reproducción» (como hacen las apps de música) en vez de la de página
 try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {}
-function play() { arranco = true; debeSonar = true; $("tapa").style.display = "none"; if (listo) yt.playVideo(); }
+function play() { if (!actual) return; arranco = true; debeSonar = true; $("tapa").style.display = "none"; if (listo) yt.playVideo(); }
 function pausa() { debeSonar = false; if (listo) yt.pauseVideo(); }
 
 window.onYouTubeIframeAPIReady = function () {
@@ -198,7 +243,7 @@ function exportar() {
 cargar();
 $("lista").innerHTML = LISTAS.map((l) => `<option value="${l.id}">${l.name}</option>`).join("");
 $("lista").value = listaActual().id;
-$("lista").onchange = (e) => { DB.lista = e.target.value; proxima = null; guardar(); siguiente(); if (candidatos(listaActual()).length < 10) buscarNuevas(false).then((n) => n && !actual && siguiente()); };
+$("lista").onchange = (e) => { DB.lista = e.target.value; proxima = null; guardar(); siguiente(); if (candidatos(listaActual()).length < 10) buscarNuevas(false).then(() => { if (!actual) siguiente(); }); };
 $("tapa").onclick = play;
 $("pp").onclick = () => (listo && yt.getPlayerState() === 1 ? pausa() : play());
 $("sig").onclick = siguiente;
@@ -216,4 +261,5 @@ $("version").textContent = "v" + VERSION;
 if (!(navigator.standalone || matchMedia("(display-mode: standalone)").matches)) $("instalar").style.display = "block";
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 sonar(tomar());
-if (!actual && claveYoutube()) buscarNuevas(false).then(() => !actual && sonar(tomar()));
+if (!actual) buscarNuevas(false).then(() => { if (!actual) sonar(tomar()); }).catch(() => {});
+else if (candidatos(listaActual()).length < 10) buscarNuevas(false).catch(() => {});
