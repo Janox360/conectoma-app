@@ -1,5 +1,5 @@
 // app.js · la app web del Conectoma: memoria, reproductor, pantalla bloqueada y menú. La lógica está en conectoma.js.
-const VERSION = "1.0.1";
+const VERSION = "1.1.0";
 const CLAVE_DB = "conectoma-db", CLAVE_YT = "conectoma-clave-youtube";
 const ERRORES_SIN_EMBED = [100, 101, 150, 152, 153];
 const $ = (id) => document.getElementById(id);
@@ -106,14 +106,79 @@ async function buscarNuevas(avisar) {
 }
 
 // ---------- el reproductor ----------
-let yt = null, listo = false, arranco = false, debeSonar = false, actual = null, proxima = null;
+// Dos formas de sonar:
+//  🎵 audio (por defecto): pide el audio de la canción a un servidor libre (Piped o Invidious) y lo toca en un <audio> de
+//     la app. No pasa por el reproductor de YouTube, así que no hay anuncios, y como es audio de la propia app iOS lo
+//     deja sonar con la pantalla bloqueada y pasa solo a la siguiente (como Video Lite, pero sin ser app nativa).
+//  🎬 video: el reproductor embebido de YouTube (puede traer anuncios; iOS lo pausa al bloquear).
+// Si una canción no consigue audio, esa suena por el reproductor de YouTube.
+let yt = null, listo = false, arranco = false, debeSonar = false, actual = null, proxima = null, motor = "yt";
 const historia = [];
+const modo = () => localStorage.getItem("conectoma-modo") || "audio";
+const au = () => $("au");
 const evitar = () => new Set([...historia.slice(-30), proxima && proxima.id].filter(Boolean));
 function tomar() {
   const lista = listaActual();
   const r = elegir(lista, evitar(), true);
   if (r.vueltaNueva && tocaSemillas(lista)) semillas(lista, false).catch(() => {});
   return r.cancion;
+}
+
+// el audio de una canción: m4a (el que iOS toca siempre), del servidor que respondió la última vez
+const PIPED = ["https://pipedapi.kavin.rocks", "https://pipedapi.adminforge.de", "https://api.piped.private.coffee"];
+const INVIDIOUS = ["https://inv.nadeko.net", "https://invidious.nerdvpn.de", "https://invidious.privacyredirect.com", "https://yewtu.be"];
+const reintentos = new Set(); // canciones cuyo audio ya falló una vez
+const audios = new Map(); // id → { url, hasta } (los enlaces vencen en unas horas)
+async function fuenteAudio(id) {
+  const g = audios.get(id);
+  if (g && g.hasta > Date.now()) return g.url;
+  const bueno = localStorage.getItem("conectoma-audio") || "";
+  const servidores = [...PIPED.map((b) => ["piped", b]), ...INVIDIOUS.map((b) => ["inv", b])].sort((a, b) => (b[1] === bueno) - (a[1] === bueno));
+  for (const [tipo, base] of servidores) {
+    try {
+      let lista;
+      if (tipo === "piped") {
+        const j = await conTiempo(base + "/streams/" + id, 9000);
+        lista = (j.audioStreams || []).map((x) => ({ url: x.url, tipo: x.mimeType || "", br: x.bitrate || 0 }));
+      } else {
+        const j = await conTiempo(base + "/api/v1/videos/" + id + "?local=true", 9000);
+        lista = (j.adaptiveFormats || []).filter((x) => /^audio\//.test(x.type || "")).map((x) => ({ url: x.url.startsWith("/") ? base + x.url : x.url, tipo: x.type, br: +x.bitrate || 0 }));
+      }
+      const m4a = lista.filter((x) => /mp4|m4a/.test(x.tipo) && x.url).sort((a, b) => b.br - a.br);
+      if (m4a.length) {
+        localStorage.setItem("conectoma-audio", base);
+        audios.set(id, { url: m4a[0].url, hasta: Date.now() + 3 * 3600e3 });
+        return m4a[0].url;
+      }
+    } catch (e) {}
+  }
+  return null;
+}
+
+let turno = 0; // si cambias de canción mientras busca el audio, gana la última
+async function cargarCancion(c) {
+  const mio = ++turno;
+  $("portada").src = "https://i.ytimg.com/vi/" + c.id + "/hqdefault.jpg";
+  if (modo() === "audio") {
+    const url = await fuenteAudio(c.id);
+    if (mio !== turno) return;
+    if (url) {
+      motor = "audio"; mostrar("audio");
+      if (listo) yt.stopVideo();
+      au().src = url;
+      if (arranco && debeSonar) au().play().catch(() => { $("tapa").style.display = "flex"; });
+      return;
+    }
+    aviso("🎬", "Esta no tiene audio libre: va por YouTube (puede traer anuncio).");
+  }
+  motor = "yt"; mostrar("yt");
+  au().pause();
+  if (listo) arranco && debeSonar ? yt.loadVideoById(c.id) : yt.cueVideoById(c.id);
+}
+function mostrar(m) {
+  $("yt").style.visibility = m === "yt" ? "visible" : "hidden";
+  $("portada").style.display = m === "audio" ? "block" : "none";
+  $("modoInfo").textContent = m === "audio" ? "🎵 Audio sin anuncios" : "🎬 Video de YouTube";
 }
 function sonar(c) {
   if (!c) {
@@ -130,8 +195,10 @@ function sonar(c) {
   $("titulo").textContent = c.v.t;
   $("info").textContent = lista.name + (likes ? " · 👍 " + likes : "") + (c.v.semilla && c.v.n === 1 ? " · 🌱 nueva" : "");
   $("prox").textContent = proxima ? "Después: " + proxima.v.t : "";
-  if (listo) arranco ? yt.loadVideoById(c.id) : yt.cueVideoById(c.id);
-  pantallaBloqueada(c.v.t);
+  $("barra").style.width = "0";
+  cargarCancion(c);
+  if (proxima && modo() === "audio") fuenteAudio(proxima.id).catch(() => {}); // la próxima ya lista: al bloquear no hay que esperar
+  pantallaBloqueada(c);
   pintarEstado();
 }
 function siguiente() { const c = proxima && !proxima.v.b ? proxima : tomar(); proxima = null; sonar(c); }
@@ -140,28 +207,59 @@ function atras() {
   historia.pop(); const id = historia.pop();
   proxima = actual; sonar({ id, v: DB.videos[id] });
 }
+function terminada() { if (actual) actual.v.c++; siguiente(); }
 // Safari 17+: pedirle a iOS una sesión de audio de «reproducción» (como hacen las apps de música) en vez de la de página
 try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {}
-function play() { if (!actual) return; arranco = true; debeSonar = true; $("tapa").style.display = "none"; if (listo) yt.playVideo(); }
-function pausa() { debeSonar = false; if (listo) yt.pauseVideo(); }
+function play() {
+  if (!actual) return;
+  arranco = true; debeSonar = true; $("tapa").style.display = "none";
+  if (motor === "audio") { if (au().src) au().play().catch(() => {}); } else if (listo) yt.playVideo();
+}
+function pausa() { debeSonar = false; if (motor === "audio") au().pause(); else if (listo) yt.pauseVideo(); }
+const sonando = () => (motor === "audio" ? !au().paused : listo && yt.getPlayerState() === 1);
+
+// el <audio>
+function prepararAudio() {
+  const a = au();
+  a.addEventListener("ended", () => { if (motor === "audio") terminada(); });
+  a.addEventListener("playing", () => { $("pp").textContent = "⏸"; $("tapa").style.display = "none"; estadoBloqueo("playing"); });
+  a.addEventListener("pause", () => {
+    $("pp").textContent = "▶️"; estadoBloqueo("paused");
+    if (document.visibilityState === "visible" && !a.ended) debeSonar = false; // la pausaste tú
+  });
+  a.addEventListener("timeupdate", () => {
+    if (!a.duration || !isFinite(a.duration)) return;
+    $("barra").style.width = (100 * a.currentTime / a.duration) + "%";
+    try { navigator.mediaSession.setPositionState({ duration: a.duration, position: a.currentTime, playbackRate: 1 }); } catch (e) {}
+  });
+  a.addEventListener("error", () => { // el enlace venció o el servidor falló: otra vez, y si no, por YouTube
+    if (!actual || motor !== "audio" || !a.getAttribute("src")) return;
+    const id = actual.id;
+    audios.delete(id);
+    if (!reintentos.has(id)) { reintentos.add(id); localStorage.removeItem("conectoma-audio"); cargarCancion(actual); } // una vez más, con otro servidor
+    else { a.removeAttribute("src"); motor = "yt"; mostrar("yt"); if (listo) debeSonar ? yt.loadVideoById(id) : yt.cueVideoById(id); }
+  });
+}
 
 window.onYouTubeIframeAPIReady = function () {
   yt = new YT.Player("yt", {
     host: "https://www.youtube-nocookie.com",
     playerVars: { playsinline: 1, rel: 0, modestbranding: 1, fs: 1, iv_load_policy: 3 },
     events: {
-      onReady: () => { listo = true; if (actual) yt.cueVideoById(actual.id); },
+      onReady: () => { listo = true; if (actual && motor === "yt") yt.cueVideoById(actual.id); },
       onStateChange: (e) => {
-        if (e.data === YT.PlayerState.ENDED) { if (actual) actual.v.c++; siguiente(); }
+        if (motor !== "yt") return;
+        if (e.data === YT.PlayerState.ENDED) terminada();
         if (e.data === YT.PlayerState.PLAYING) { arranco = true; $("tapa").style.display = "none"; $("pp").textContent = "⏸"; }
         if (e.data === YT.PlayerState.PAUSED) {
           $("pp").textContent = "▶️";
           if (document.visibilityState === "visible") debeSonar = false; // la pausaste tú (con la pantalla prendida)
         }
         if (e.data === YT.PlayerState.CUED && arranco && debeSonar) yt.playVideo();
-        if ("mediaSession" in navigator) navigator.mediaSession.playbackState = e.data === YT.PlayerState.PLAYING ? "playing" : "paused";
+        estadoBloqueo(e.data === YT.PlayerState.PLAYING ? "playing" : "paused");
       },
       onError: (e) => { // no se puede ver fuera de YouTube: no se vuelve a elegir
+        if (motor !== "yt") return;
         if (actual && ERRORES_SIN_EMBED.includes(e.data)) { actual.v.ne = true; historia.pop(); }
         siguiente();
       },
@@ -170,26 +268,30 @@ window.onYouTubeIframeAPIReady = function () {
 };
 
 // ---------- pantalla bloqueada: controles y volver a sonar ----------
-function pantallaBloqueada(titulo) {
+function estadoBloqueo(s) { try { navigator.mediaSession.playbackState = s; } catch (e) {} }
+function pantallaBloqueada(c) {
   if (!("mediaSession" in navigator)) return;
-  const partes = String(titulo).split(/\s[-–—|]\s/);
+  const partes = String(c.v.t).split(/\s[-–—|]\s/);
   try {
-    navigator.mediaSession.metadata = new MediaMetadata({ title: partes[1] || titulo, artist: partes.length > 1 ? partes[0] : "", album: "Conectoma · " + listaActual().name,
-      artwork: [{ src: "icono-512.png", sizes: "512x512", type: "image/png" }] });
+    navigator.mediaSession.metadata = new MediaMetadata({ title: partes[1] || c.v.t, artist: partes.length > 1 ? partes[0] : "", album: "Conectoma · " + listaActual().name,
+      artwork: [{ src: "https://i.ytimg.com/vi/" + c.id + "/hqdefault.jpg", sizes: "480x360", type: "image/jpeg" }, { src: "icono-512.png", sizes: "512x512", type: "image/png" }] });
     navigator.mediaSession.setActionHandler("play", play);
     navigator.mediaSession.setActionHandler("pause", pausa);
     navigator.mediaSession.setActionHandler("nexttrack", siguiente);
     navigator.mediaSession.setActionHandler("previoustrack", atras);
+    navigator.mediaSession.setActionHandler("seekto", (d) => { if (motor === "audio" && d.seekTime != null) au().currentTime = d.seekTime; });
   } catch (e) {}
 }
-// iOS pausa el video al bloquear: si tenía que sonar, se le vuelve a dar play; y si terminó mientras tanto, la siguiente
+// con video: iOS lo pausa al bloquear; si tenía que sonar, se le vuelve a dar play, y si terminó mientras tanto, la siguiente
 setInterval(() => {
-  if (!listo || !debeSonar || !actual) return;
+  if (motor !== "yt" || !listo || !debeSonar || !actual) return;
   const e = yt.getPlayerState();
-  if (e === YT.PlayerState.ENDED) { actual.v.c++; siguiente(); }
+  if (e === YT.PlayerState.ENDED) terminada();
   else if (e === YT.PlayerState.PAUSED || e === YT.PlayerState.CUED) yt.playVideo();
 }, 2000);
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && debeSonar && listo && yt.getPlayerState() !== 1) yt.playVideo(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && debeSonar && actual && !sonando()) play();
+});
 
 // ---------- opinar ----------
 function opinar(tipo) {
@@ -245,7 +347,7 @@ $("lista").innerHTML = LISTAS.map((l) => `<option value="${l.id}">${l.name}</opt
 $("lista").value = listaActual().id;
 $("lista").onchange = (e) => { DB.lista = e.target.value; proxima = null; guardar(); siguiente(); if (candidatos(listaActual()).length < 10) buscarNuevas(false).then(() => { if (!actual) siguiente(); }); };
 $("tapa").onclick = play;
-$("pp").onclick = () => (listo && yt.getPlayerState() === 1 ? pausa() : play());
+$("pp").onclick = () => (sonando() ? pausa() : play());
 $("sig").onclick = siguiente;
 $("atras").onclick = atras;
 $("like").onclick = () => opinar("like");
@@ -258,6 +360,9 @@ $("guardarClave").onclick = () => { localStorage.setItem(CLAVE_YT, $("clave").va
 $("archivo").onchange = (e) => e.target.files[0] && importar(e.target.files[0]);
 $("exportar").onclick = exportar;
 $("version").textContent = "v" + VERSION;
+prepararAudio();
+$("modo").value = modo();
+$("modo").onchange = (e) => { localStorage.setItem("conectoma-modo", e.target.value); if (actual) cargarCancion(actual); };
 if (!(navigator.standalone || matchMedia("(display-mode: standalone)").matches)) $("instalar").style.display = "block";
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 sonar(tomar());
