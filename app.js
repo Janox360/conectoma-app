@@ -1,5 +1,5 @@
 // app.js · la app web del Conectoma: memoria, reproductor, pantalla bloqueada y menú. La lógica está en conectoma.js.
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 const CLAVE_DB = "conectoma-db", CLAVE_YT = "conectoma-clave-youtube";
 const ERRORES_SIN_EMBED = [100, 101, 150, 152, 153];
 const $ = (id) => document.getElementById(id);
@@ -76,6 +76,12 @@ async function buscarLibre(q) {
   throw new Error("ningún buscador respondió");
 }
 async function buscarYoutube(q) {
+  if (casa() && !claveYoutube()) {
+    try {
+      const j = await conTiempo(casa() + "/buscar?q=" + encodeURIComponent(q), 60000);
+      if (j.ok) return j.videos.map((x) => ({ id: x.id, titulo: conArtista(x.titulo, x.canal), dur: x.dur || null }));
+    } catch (e) {}
+  }
   const k = claveYoutube();
   if (!k) return buscarLibre(q);
   const u = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&maxResults=15&q=" + encodeURIComponent(q) + "&key=" + encodeURIComponent(k);
@@ -129,9 +135,18 @@ const PIPED = ["https://pipedapi.kavin.rocks", "https://pipedapi.adminforge.de",
 const INVIDIOUS = ["https://inv.nadeko.net", "https://invidious.nerdvpn.de", "https://invidious.privacyredirect.com", "https://yewtu.be"];
 const reintentos = new Set(); // canciones cuyo audio ya falló una vez
 const audios = new Map(); // id → { url, hasta } (los enlaces vencen en unas horas)
+// 🏠 la casa: el Acer con conectoma-audio-casa (yt-dlp, por Tailscale con HTTPS). Es lo más firme: los servidores libres
+// suelen estar bloqueados por YouTube.
+const casa = () => (localStorage.getItem("conectoma-casa") || "").replace(/\/+$/, "");
 async function fuenteAudio(id) {
   const g = audios.get(id);
   if (g && g.hasta > Date.now()) return g.url;
+  if (casa() && !reintentos.has("casa:" + id)) {
+    try {
+      const j = await conTiempo(casa() + "/preparar/" + id, 60000);
+      if (j.ok) { const url = casa() + "/audio/" + id; audios.set(id, { url, hasta: Date.now() + 2 * 3600e3 }); return url; }
+    } catch (e) {}
+  }
   const bueno = localStorage.getItem("conectoma-audio") || "";
   const servidores = [...PIPED.map((b) => ["piped", b]), ...INVIDIOUS.map((b) => ["inv", b])].sort((a, b) => (b[1] === bueno) - (a[1] === bueno));
   for (const [tipo, base] of servidores) {
@@ -169,7 +184,7 @@ async function cargarCancion(c) {
       if (arranco && debeSonar) au().play().catch(() => { $("tapa").style.display = "flex"; });
       return;
     }
-    aviso("🎬", "Esta no tiene audio libre: va por YouTube (puede traer anuncio).");
+    aviso("🎬", casa() ? "La casa no respondió (¿Tailscale encendido?): esta va por YouTube." : "Sin audio libre: va por YouTube. Para que no pase, ☰ › 🏠 Audio desde la casa.");
   }
   motor = "yt"; mostrar("yt");
   au().pause();
@@ -236,6 +251,7 @@ function prepararAudio() {
     if (!actual || motor !== "audio" || !a.getAttribute("src")) return;
     const id = actual.id;
     audios.delete(id);
+    if (casa() && a.getAttribute("src").startsWith(casa())) reintentos.add("casa:" + id); // la casa no pudo: los libres
     if (!reintentos.has(id)) { reintentos.add(id); localStorage.removeItem("conectoma-audio"); cargarCancion(actual); } // una vez más, con otro servidor
     else { a.removeAttribute("src"); motor = "yt"; mostrar("yt"); if (listo) debeSonar ? yt.loadVideoById(id) : yt.cueVideoById(id); }
   });
@@ -357,6 +373,16 @@ $("abrirMenu").onclick = () => abrirMenu();
 $("cerrarMenu").onclick = () => $("menu").classList.remove("ver");
 $("buscar").onclick = () => buscarNuevas(true);
 $("guardarClave").onclick = () => { localStorage.setItem(CLAVE_YT, $("clave").value.trim()); aviso("🔑", "Clave guardada."); };
+$("casa").value = casa();
+$("guardarCasa").onclick = async () => {
+  let u = $("casa").value.trim().replace(/\/+$/, "");
+  if (u && !/^https:\/\//.test(u)) u = "https://" + u;
+  localStorage.setItem("conectoma-casa", u); $("casa").value = u;
+  if (!u) return aviso("🏠", "Sin audio desde la casa.");
+  aviso("🏠", "Probando…");
+  try { const j = await conTiempo(u + "/health", 8000); aviso("🏠", j.ok ? "✅ Conectado al " + (j.equipo === "hp" ? "HP" : "Acer") + ": el audio sale de la casa." : "No respondió bien."); if (actual) cargarCancion(actual); }
+  catch (e) { aviso("🏠", "No llego a esa dirección. ¿Tailscale está encendido en el iPhone y en el Acer?"); }
+};
 $("archivo").onchange = (e) => e.target.files[0] && importar(e.target.files[0]);
 $("exportar").onclick = exportar;
 $("version").textContent = "v" + VERSION;

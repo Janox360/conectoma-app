@@ -58,6 +58,10 @@ a{color:var(--suave)}
   <h2>🎵 Cómo suena</h2>
   <select id="modo" style="max-width:100%;width:100%;font-size:15px;padding:12px"><option value="audio">🎵 Solo audio: sin anuncios y sigue con la pantalla bloqueada</option><option value="video">🎬 Video de YouTube (puede traer anuncios)</option></select>
   <p>En «solo audio» la app pide el audio de cada canción a servidores libres (Piped, Invidious) y lo toca ella misma, sin el reproductor de YouTube: por eso no hay anuncios. Si una canción no lo consigue, esa va por YouTube.</p>
+  <h2>🏠 Audio desde la casa</h2>
+  <p>Lo más firme: el Acer saca el audio con yt-dlp y te lo pasa por Tailscale (en la casa y con datos móviles). Se instala una vez con <b>conectoma-audio-casa-1.0.py</b>, que al final muestra la dirección para pegar aquí.</p>
+  <input type="text" id="casa" placeholder="https://acer.tu-red.ts.net:8443" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <button id="guardarCasa">🏠 Guardar y probar</button>
   <h2>🌱 Canciones nuevas</h2>
   <button id="buscar">🌱 Buscar canciones nuevas para esta lista</button>
   <p>Busca en YouTube canciones de los artistas con 👍 de la lista y de artistas nuevos, con los mismos filtros del Acer. Sin clave usa buscadores libres de YouTube (a veces lentos o caídos). Para que sea siempre rápido, pon tu clave gratis de YouTube:</p>
