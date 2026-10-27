@@ -5,7 +5,7 @@ const SEMILLAS_CADA_HORAS = 6;
 // ---------- las listas (las del Acer, con los artistas que agregó conectoma-semillas 1.5) ----------
 // «Nombre|Variante»: las dos formas cuentan como el artista; busca con la primera.
 const LISTAS = [
-  { id: "para-mi", name: "Para mí", todas: true, artists: [], songs: [], keywords: [] },
+  { id: "para-mi", name: "Para mí", todas: true, artists: ["Amy Winehouse", "Black Sabbath"], songs: [], keywords: [] },
   { id: "funk", name: "Funk", pista: "funk", artists: ["George Benson", "Intrigue", "Chic", "James Brown", "Earth Wind and Fire|Earth, Wind & Fire", "Kool and the Gang|Kool & the Gang", "Parliament", "Funkadelic", "The Gap Band", "Cameo", "Rick James", "Prince", "Zapp", "Ohio Players", "The Isley Brothers", "Average White Band", "S.O.S. Band", "Lakeside", "Dazz Band", "Slave", "Brass Construction", "B.T. Express", "Change", "Delegation", "The Bar-Kays", "Rufus", "Chaka Khan", "Commodores", "Mtume", "The Meters", "Dabeull", "Jamiroquai", "Vulfpeck", "Cory Wong", "Tower of Power", "The Brand New Heavies", "Incognito", "Lettuce", "Chromeo", "Breakbot", "Parcels", "Bruno Mars", "Mark Ronson", "Daft Punk", "Nile Rodgers", "Michael Jackson", "Roger Troutman"], nuevos: ["Anderson .Paak", "Tom Misch", "Durand Jones & The Indications", "Khruangbin"], songs: ["George Benson Love X Love", "Intrigue Call of the Heart"], keywords: ["funk", "funky", "boogie", "disco-funk"] },
   { id: "vinilo-boogie-80", name: "Vinilo · Boogie 80", pista: "boogie", artists: ["George Benson", "Intrigue", "Change", "Mtume", "Shalamar", "D-Train", "Dabeull", "Rockwell", "Kashif", "Midnight Star", "The System"], nuevos: ["Patrice Rushen", "Evelyn King", "Loose Ends", "Yarbrough & Peoples", "Cheryl Lynn"], songs: ["George Benson Love X Love", "Intrigue Call of the Heart"], keywords: ["boogie", "post-disco", "1980", "1981", "1982", "1983", "1984", "1985", "1986", "1987", "1988", "1989"] },
   { id: "disco-funk-70-80", name: "Disco · Funk 70/80", pista: "disco", artists: ["Chic", "Sister Sledge", "Earth Wind and Fire", "Kool and the Gang", "The Whispers", "The Trammps", "B.T. Express", "Commodores", "Bee Gees", "The Jacksons", "Michael Jackson", "Donna Summer", "Gloria Gaynor"], nuevos: ["Boney M.", "KC and the Sunshine Band|KC & The Sunshine Band", "Patrice Rushen", "Cheryl Lynn", 'Evelyn King|Evelyn "Champagne" King'], songs: [], keywords: ["disco", "funk", "boogie", "1970", "1971", "1972", "1973", "1974", "1975", "1976", "1977", "1978", "1979", "1980", "1981", "1982", "1983", "1984", "1985", "1986", "1987", "1988", "1989"] },
@@ -15,13 +15,15 @@ const LISTAS = [
   { id: "rock-grunge-numetal", name: "Rock · Grunge · Nu-Metal", pista: "rock", artists: ["Nirvana", "Alice In Chains", "Korn", "Deftones", "System of a Down", "P.O.D.", "Rage Against the Machine", "Red Hot Chili Peppers", "Stone Temple Pilots", "Soundgarden", "Pearl Jam", "Limp Bizkit", "Mad Season", "Pantera", "Papa Roach", "Linkin Park", "Iron Maiden", "Led Zeppelin", "Audioslave", "Foo Fighters"], nuevos: ["The Smashing Pumpkins|Smashing Pumpkins", "Silverchair", "Bush", "Incubus", "Slipknot", "Queens of the Stone Age"], songs: [], keywords: [] },
   { id: "indie-psicodelia", name: "Indie · Psicodelia", pista: "indie", artists: ["Tame Impala", "Arctic Monkeys", "Inner Wave", "Feng Suave", "Men I Trust", "Radiohead", "Palace", "Beck", "Little Simz", "MGMT", "Mac DeMarco", "The Strokes"], nuevos: ["Khruangbin", "Glass Animals", "Unknown Mortal Orchestra", "King Gizzard & the Lizard Wizard", "Temples", "Babe Rainbow"], songs: [], keywords: [] },
   { id: "pop-newwave-80", name: "Pop · New Wave 80", pista: "80s", artists: ["Depeche Mode", "Tears For Fears", "A Flock Of Seagulls", "Billy Idol", "The Cure", "Duran Duran", "a-ha", "New Order", "Pet Shop Boys", "Soda Stereo"], nuevos: ["Eurythmics", "The Police", "Talking Heads", "Simple Minds", "INXS", "Los Prisioneros", "Virus", "Hombres G"], songs: [], keywords: [] },
-  { id: "baladas-espanol", name: "Baladas en español", pista: "balada", artists: ["Camilo Sesto", "José José", "Juan Gabriel", "Rocío Dúrcal", "Raphael", "Nino Bravo", "Leonardo Favio", "Sandro"], nuevos: ["Luis Miguel", "Roberto Carlos", "José Luis Perales", "Julio Iglesias", "Ana Gabriel", "Rocío Jurado"], songs: [], keywords: [] },
+  { id: "baladas-espanol", name: "Baladas en español", pista: "balada", artists: ["Luis Miguel", "Camilo Sesto", "Juan Gabriel", "Rocío Dúrcal", "Raphael", "Nino Bravo", "Leonardo Favio", "Sandro"], nuevos: ["Roberto Carlos", "José Luis Perales", "Julio Iglesias", "Ana Gabriel", "Rocío Jurado"], songs: [], keywords: [] },
 ];
 // cada lista con todos sus nombres (artistas + nuevos, con variantes)
 for (const l of LISTAS) {
   l.busca = [...l.artists, ...(l.nuevos || [])].map((x) => x.split("|")[0].trim());
   l.nombres = [...l.artists, ...(l.nuevos || [])].flatMap((x) => x.split("|").map((y) => y.trim())).filter(Boolean);
 }
+// lo que Jano sacó del Acer (conectoma-listas-jano-1.0): no entra ni suena
+const VETADOS = /jos[eé]\s+jos[eé]/i;
 const TODOS_ARTISTAS = [...new Set(LISTAS.flatMap((l) => l.nombres))];
 
 // ---------- filtros (de conectoma_musical_stations.py; los títulos se comparan sin tildes) ----------
@@ -56,6 +58,7 @@ function tieneIdentidad(titulo) { // has_track_identity
   return contiene(" " + normalizar(artista) + " ", TODOS_ARTISTAS);
 }
 function calzaLista(titulo, lista) { // candidate_matches
+  if (VETADOS.test(titulo)) return false;
   const t = sinTildes(titulo);
   if (CONTENEDOR.test(t) || NO_MUSICA.test(t)) return false;
   const hay = " " + normalizar(titulo) + " ";

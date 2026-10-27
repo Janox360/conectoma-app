@@ -1,5 +1,5 @@
 // app.js · la app web del Conectoma: memoria, reproductor, pantalla bloqueada y menú. La lógica está en conectoma.js.
-const VERSION = "1.2.0";
+const VERSION = "1.2.1";
 const CLAVE_DB = "conectoma-db", CLAVE_YT = "conectoma-clave-youtube";
 const ERRORES_SIN_EMBED = [100, 101, 150, 152, 153];
 const $ = (id) => document.getElementById(id);
@@ -15,7 +15,9 @@ function nuevaDB(x) {
   }
   return d;
 }
-function cargar() { try { DB = nuevaDB(JSON.parse(localStorage.getItem(CLAVE_DB) || "null")); } catch (e) { DB = nuevaDB(); } }
+function cargar() { try { DB = nuevaDB(JSON.parse(localStorage.getItem(CLAVE_DB) || "null")); } catch (e) { DB = nuevaDB(); }
+  for (const [id, v] of Object.entries(DB.videos)) if (VETADOS.test(v.t || "")) delete DB.videos[id];
+}
 function guardar() {
   DB.decisiones = DB.decisiones.slice(-300);
   try { localStorage.setItem(CLAVE_DB, JSON.stringify(DB)); } catch (e) { aviso("⚠️", "No pude guardar lo aprendido (¿Safari en modo privado?)."); }
