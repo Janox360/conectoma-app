@@ -1,5 +1,5 @@
 // app.js · la app web del Conectoma: memoria, reproductor, pantalla bloqueada y menú. La lógica está en conectoma.js.
-const VERSION = "1.2.1";
+const VERSION = "1.3.0";
 const CLAVE_DB = "conectoma-db", CLAVE_YT = "conectoma-clave-youtube";
 const ERRORES_SIN_EMBED = [100, 101, 150, 152, 153];
 const $ = (id) => document.getElementById(id);
@@ -139,7 +139,8 @@ const reintentos = new Set(); // canciones cuyo audio ya falló una vez
 const audios = new Map(); // id → { url, hasta } (los enlaces vencen en unas horas)
 // 🏠 la casa: el Acer con conectoma-audio-casa (yt-dlp, por Tailscale con HTTPS). Es lo más firme: los servidores libres
 // suelen estar bloqueados por YouTube.
-const casa = () => (localStorage.getItem("conectoma-casa") || "").replace(/\/+$/, "");
+const CASA_DEFECTO = "https://acer.tail4d190f.ts.net:8443"; // el Acer de Jano (solo responde dentro de su Tailscale)
+const casa = () => { const g = localStorage.getItem("conectoma-casa"); return (g === null ? CASA_DEFECTO : g).replace(/\/+$/, ""); };
 async function fuenteAudio(id) {
   const g = audios.get(id);
   if (g && g.hasta > Date.now()) return g.url;
@@ -177,20 +178,32 @@ async function cargarCancion(c) {
   const mio = ++turno;
   $("portada").src = "https://i.ytimg.com/vi/" + c.id + "/hqdefault.jpg";
   if (modo() === "audio") {
+    motor = "audio"; mostrar("audio");
+    $("modoInfo").textContent = casa() ? "⏳ Preparando el audio en el Acer…" : "⏳ Buscando el audio…";
     const url = await fuenteAudio(c.id);
     if (mio !== turno) return;
     if (url) {
+      fallos = 0;
       motor = "audio"; mostrar("audio");
       if (listo) yt.stopVideo();
       au().src = url;
       if (arranco && debeSonar) au().play().catch(() => { $("tapa").style.display = "flex"; });
       return;
     }
-    aviso("🎬", casa() ? "La casa no respondió (¿Tailscale encendido?): esta va por YouTube." : "Sin audio libre: va por YouTube. Para que no pase, ☰ › 🏠 Audio desde la casa.");
+    return sinAudio(c);
   }
   motor = "yt"; mostrar("yt");
   au().pause();
   if (listo) arranco && debeSonar ? yt.loadVideoById(c.id) : yt.cueVideoById(c.id);
+}
+// en «solo audio» nunca se cae al reproductor de YouTube (anuncios): esa canción se salta; si fallan 3 seguidas, se para
+let fallos = 0;
+function sinAudio(c) {
+  if (listo) yt.stopVideo();
+  if (++fallos < 3) { aviso("⏭", "No conseguí el audio de esta: paso a la siguiente."); return siguiente(); }
+  fallos = 0; debeSonar = false;
+  $("modoInfo").textContent = "⚠️ " + (casa() ? "El Acer no responde: ¿Tailscale está encendido en el iPhone y el Acer prendido?" : "Los servidores libres no responden.");
+  aviso("⚠️", casa() ? "No llego al Acer. Enciende Tailscale en el iPhone y toca ▶️." : "Sin audio. Pon la dirección del Acer en ☰ › 🏠.");
 }
 function mostrar(m) {
   $("yt").style.visibility = m === "yt" ? "visible" : "hidden";
@@ -230,7 +243,7 @@ try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } ca
 function play() {
   if (!actual) return;
   arranco = true; debeSonar = true; $("tapa").style.display = "none";
-  if (motor === "audio") { if (au().src) au().play().catch(() => {}); } else if (listo) yt.playVideo();
+  if (motor === "audio") { if (au().getAttribute("src")) au().play().catch(() => {}); else cargarCancion(actual); } else if (listo) yt.playVideo();
 }
 function pausa() { debeSonar = false; if (motor === "audio") au().pause(); else if (listo) yt.pauseVideo(); }
 const sonando = () => (motor === "audio" ? !au().paused : listo && yt.getPlayerState() === 1);
@@ -255,7 +268,7 @@ function prepararAudio() {
     audios.delete(id);
     if (casa() && a.getAttribute("src").startsWith(casa())) reintentos.add("casa:" + id); // la casa no pudo: los libres
     if (!reintentos.has(id)) { reintentos.add(id); localStorage.removeItem("conectoma-audio"); cargarCancion(actual); } // una vez más, con otro servidor
-    else { a.removeAttribute("src"); motor = "yt"; mostrar("yt"); if (listo) debeSonar ? yt.loadVideoById(id) : yt.cueVideoById(id); }
+    else { a.removeAttribute("src"); sinAudio(actual); }
   });
 }
 
@@ -376,6 +389,7 @@ $("cerrarMenu").onclick = () => $("menu").classList.remove("ver");
 $("buscar").onclick = () => buscarNuevas(true);
 $("guardarClave").onclick = () => { localStorage.setItem(CLAVE_YT, $("clave").value.trim()); aviso("🔑", "Clave guardada."); };
 $("casa").value = casa();
+$("casa").placeholder = CASA_DEFECTO;
 $("guardarCasa").onclick = async () => {
   let u = $("casa").value.trim().replace(/\/+$/, "");
   if (u && !/^https:\/\//.test(u)) u = "https://" + u;
